@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 pub async fn check_network() -> bool {
     let client = reqwest::Client::new();
     match client

@@ -15,7 +15,7 @@ pub struct DownloadProgress {
 
 pub struct Downloader {
     progress: Arc<RwLock<DownloadProgress>>,
-    threads: u32,
+    _threads: u32,
 }
 
 impl Downloader {
@@ -26,7 +26,7 @@ impl Downloader {
                 total: 0,
                 speed: 0.0,
             })),
-            threads,
+            _threads: threads,
         }
     }
     
@@ -72,10 +72,12 @@ impl Downloader {
         Ok(())
     }
     
+    #[allow(dead_code)]
     pub fn get_progress(&self) -> DownloadProgress {
         self.progress.read().clone()
     }
     
+    #[allow(dead_code)]
     pub async fn download_plugin(&self, url: &str, drive_letter: &str, filename: &str) -> Result<()> {
         let download_path = format!("{}\\ce-apps", drive_letter);
         std::fs::create_dir_all(&download_path)?;

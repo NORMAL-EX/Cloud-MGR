@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use anyhow::Result;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use crate::mode::PluginMode;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,9 +19,12 @@ pub struct Plugin {
 }
 
 impl Plugin {
-    // 生成唯一标识，用于去重
     fn get_unique_key(&self) -> String {
         format!("{}_{}_{}_{}", self.name, self.version, self.author, self.size)
+    }
+    
+    pub fn get_plugin_id(&self) -> String {
+        format!("{}_{}", self.name, self.author)
     }
 }
 
@@ -33,7 +36,6 @@ pub struct PluginCategory {
     pub list: Vec<Plugin>,
 }
 
-// Cloud-PE响应格式
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloudPEResponse {
     pub code: i32,
@@ -41,14 +43,12 @@ pub struct CloudPEResponse {
     pub data: Vec<PluginCategory>,
 }
 
-// HotPE响应格式
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotPEResponse {
     pub state: String,
     pub data: Vec<HotPECategory>,
 }
 
-// HotPE分类格式
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotPECategory {
     pub class: String,
@@ -57,17 +57,15 @@ pub struct HotPECategory {
     pub list: Vec<HotPEPlugin>,
 }
 
-// HotPE插件格式 - 修复：modified可能是整数或字符串
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotPEPlugin {
     pub name: String,
-    pub size: serde_json::Value,  // 可能是整数或字符串
+    pub size: serde_json::Value,
     #[serde(deserialize_with = "deserialize_modified")]
     pub modified: String,
     pub link: String,
 }
 
-// 自定义反序列化函数，处理modified字段可能是整数的情况
 fn deserialize_modified<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -78,7 +76,6 @@ where
     match value {
         serde_json::Value::String(s) => Ok(s),
         serde_json::Value::Number(n) => {
-            // 如果是Unix时间戳，转换为字符串
             if let Some(timestamp) = n.as_i64() {
                 Ok(format_timestamp(timestamp))
             } else {
@@ -90,7 +87,7 @@ where
 }
 
 fn format_timestamp(timestamp: i64) -> String {
-    use chrono::{DateTime, Utc};
+    use chrono::DateTime;
     if let Some(dt) = DateTime::from_timestamp(timestamp, 0) {
         dt.format("%Y-%m-%d %H:%M:%S").to_string()
     } else {
@@ -102,6 +99,7 @@ pub struct PluginManager {
     pub categories: Vec<PluginCategory>,
     enabled_plugins: Vec<Plugin>,
     disabled_plugins: Vec<Plugin>,
+    enabled_plugin_map: HashMap<String, Plugin>,
     mode: PluginMode,
 }
 
@@ -111,11 +109,11 @@ impl PluginManager {
             categories: Vec::new(),
             enabled_plugins: Vec::new(),
             disabled_plugins: Vec::new(),
+            enabled_plugin_map: HashMap::new(),
             mode,
         }
     }
     
-    // 静态异步方法，不需要 self
     pub async fn fetch_plugins_async(mode: PluginMode) -> Result<Vec<PluginCategory>> {
         let client = reqwest::Client::new();
         let response = client
@@ -130,7 +128,6 @@ impl PluginManager {
                 let mut plugins_response: CloudPEResponse = serde_json::from_str(&text)?;
                 
                 if plugins_response.code == 200 {
-                    // 对每个分类的插件进行去重
                     for category in &mut plugins_response.data {
                         let mut seen = HashSet::new();
                         let mut unique_plugins = Vec::new();
@@ -151,12 +148,9 @@ impl PluginManager {
                 }
             }
             PluginMode::HotPE => {
-                // 先尝试解析，如果失败打印原始响应以便调试
                 let hotpe_response: HotPEResponse = match serde_json::from_str(&text) {
                     Ok(resp) => resp,
                     Err(e) => {
-                        eprintln!("解析HotPE响应失败: {}", e);
-                        eprintln!("原始响应: {}", text);
                         return Err(anyhow::anyhow!("解析HotPE响应失败: {}", e));
                     }
                 };
@@ -167,9 +161,7 @@ impl PluginManager {
                     for hotpe_category in hotpe_response.data {
                         let mut plugins = Vec::new();
                         
-                        // 转换HotPE插件格式到通用格式
                         for hotpe_plugin in hotpe_category.list {
-                            // 解析文件名
                             let file_name = hotpe_plugin.name.clone();
                             let parts: Vec<&str> = file_name.trim_end_matches(".HPM").split('_').collect();
                             
@@ -181,7 +173,6 @@ impl PluginManager {
                                 (file_name.clone(), String::new(), String::new(), String::new())
                             };
                             
-                            // 处理size字段，可能是整数或字符串
                             let size_str = match hotpe_plugin.size {
                                 serde_json::Value::Number(n) => {
                                     if let Some(size) = n.as_i64() {
@@ -238,7 +229,6 @@ impl PluginManager {
                     plugin.name, plugin.author, plugin.describe, plugin.version).to_lowercase();
                     
                 if search_text.contains(&keyword) {
-                    // 搜索结果也要去重
                     let key = plugin.get_unique_key();
                     if seen.insert(key) {
                         results.push(plugin.clone());
@@ -260,6 +250,7 @@ impl PluginManager {
         
         self.enabled_plugins.clear();
         self.disabled_plugins.clear();
+        self.enabled_plugin_map.clear();
         
         let mut seen_enabled = HashSet::new();
         let mut seen_disabled = HashSet::new();
@@ -276,10 +267,8 @@ impl PluginManager {
                     let enabled_ext = self.mode.get_enabled_extension().to_lowercase();
                     let disabled_ext = self.mode.get_disabled_extension().to_lowercase();
                     
-                    // 处理不同模式的文件格式
                     let is_enabled = match self.mode {
                         PluginMode::HotPE => {
-                            // HotPE: .HPM 启用，.hpm.off 禁用
                             ext == "hpm" && !file_name.ends_with(".hpm.off")
                         }
                         _ => ext == enabled_ext,
@@ -296,6 +285,8 @@ impl PluginManager {
                             
                             if is_enabled {
                                 if seen_enabled.insert(key) {
+                                    let plugin_id = plugin.get_plugin_id();
+                                    self.enabled_plugin_map.insert(plugin_id, plugin.clone());
                                     self.enabled_plugins.push(plugin);
                                 }
                             } else {
@@ -317,7 +308,6 @@ impl PluginManager {
         
         match self.mode {
             PluginMode::CloudPE => {
-                // Cloud-PE格式: name_version_author_describe.ce
                 let parts: Vec<&str> = file_name.split('_').collect();
                 
                 if parts.len() >= 4 {
@@ -349,7 +339,6 @@ impl PluginManager {
                 }
             }
             PluginMode::HotPE => {
-                // HotPE格式: 模块名称_模块作者_模块版本_模块介绍.HPM
                 let base_name = file_name
                     .strip_suffix(".HPM")
                     .or_else(|| file_name.strip_suffix(".hpm.off"))
@@ -384,7 +373,6 @@ impl PluginManager {
                 }
             }
             PluginMode::Edgeless => {
-                // Edgeless格式: 插件名称_插件版本_插件作者.7z
                 let base_name = file_name
                     .strip_suffix(".7z")
                     .or_else(|| file_name.strip_suffix(".7zf"))
@@ -405,7 +393,7 @@ impl PluginManager {
                         size,
                         version,
                         author,
-                        describe: String::new(), // Edgeless没有描述
+                        describe: String::new(),
                         file: file_name,
                         link: String::new(),
                     })
@@ -476,6 +464,105 @@ impl PluginManager {
     pub fn get_disabled_plugins(&self) -> &Vec<Plugin> {
         &self.disabled_plugins
     }
+    
+    pub fn get_enabled_plugin_by_id(&self, plugin_id: &str) -> Option<&Plugin> {
+        self.enabled_plugin_map.get(plugin_id)
+    }
+    
+    pub fn compare_versions(&self, version1: &str, version2: &str) -> std::cmp::Ordering {
+        let v1_parts = parse_version(version1);
+        let v2_parts = parse_version(version2);
+        
+        let max_len = v1_parts.len().max(v2_parts.len());
+        
+        for i in 0..max_len {
+            let p1 = v1_parts.get(i).unwrap_or(&VersionPart::Number(0));
+            let p2 = v2_parts.get(i).unwrap_or(&VersionPart::Number(0));
+            
+            match p1.cmp(p2) {
+                std::cmp::Ordering::Equal => continue,
+                other => return other,
+            }
+        }
+        
+        std::cmp::Ordering::Equal
+    }
+    
+    pub fn delete_plugin_file(&self, drive_letter: &str, file_name: &str) -> Result<()> {
+        let plugin_dir = format!("{}\\{}", drive_letter, self.mode.get_plugin_folder());
+        let file_path = Path::new(&plugin_dir).join(file_name);
+        
+        if !file_path.exists() {
+            anyhow::bail!("文件不存在");
+        }
+        
+        fs::remove_file(&file_path)?;
+        
+        Ok(())
+    }
+    
+    pub fn find_market_plugin_by_id(&self, plugin_id: &str) -> Option<Plugin> {
+        for category in &self.categories {
+            for plugin in &category.list {
+                if plugin.get_plugin_id() == plugin_id {
+                    return Some(plugin.clone());
+                }
+            }
+        }
+        None
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum VersionPart {
+    Number(u64),
+    Text(String),
+}
+
+fn parse_version(version: &str) -> Vec<VersionPart> {
+    let mut parts = Vec::new();
+    let mut current_number = String::new();
+    let mut current_text = String::new();
+    
+    for ch in version.chars() {
+        if ch.is_ascii_digit() {
+            if !current_text.is_empty() {
+                parts.push(VersionPart::Text(current_text.to_lowercase()));
+                current_text.clear();
+            }
+            current_number.push(ch);
+        } else if ch.is_ascii_alphabetic() {
+            if !current_number.is_empty() {
+                if let Ok(num) = current_number.parse::<u64>() {
+                    parts.push(VersionPart::Number(num));
+                }
+                current_number.clear();
+            }
+            current_text.push(ch);
+        } else {
+            if !current_number.is_empty() {
+                if let Ok(num) = current_number.parse::<u64>() {
+                    parts.push(VersionPart::Number(num));
+                }
+                current_number.clear();
+            }
+            if !current_text.is_empty() {
+                parts.push(VersionPart::Text(current_text.to_lowercase()));
+                current_text.clear();
+            }
+        }
+    }
+    
+    if !current_number.is_empty() {
+        if let Ok(num) = current_number.parse::<u64>() {
+            parts.push(VersionPart::Number(num));
+        }
+    }
+    if !current_text.is_empty() {
+        parts.push(VersionPart::Text(current_text.to_lowercase()));
+    }
+    
+    parts
 }
 
 fn format_file_size(size: i64) -> String {

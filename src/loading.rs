@@ -9,11 +9,11 @@ use tokio::runtime::Runtime;
 pub struct LoadingScreen {
     is_loading: Arc<AtomicBool>,
     network_check_status: Arc<AtomicU8>, // 0=checking, 1=success, 2=failed
-    network_error_message: Option<String>,
-    start_time: Instant,
-    runtime: Arc<Runtime>,
+    _network_error_message: Option<String>,
+    _start_time: Instant,
+    _runtime: Arc<Runtime>,
     app: Option<Box<CloudPEApp>>,
-    init_complete: bool,
+    _init_complete: bool,
     mode: PluginMode,
 }
 
@@ -77,11 +77,11 @@ impl LoadingScreen {
         Self {
             is_loading,
             network_check_status,
-            network_error_message: None,
-            start_time: Instant::now(),
-            runtime,
+            _network_error_message: None,
+            _start_time: Instant::now(),
+            _runtime: runtime,
             app: Some(Box::new(app)),
-            init_complete: false,
+            _init_complete: false,
             mode,
         }
     }
@@ -103,7 +103,7 @@ impl eframe::App for LoadingScreen {
                     
                     ui.add_space(40.0);
                     
-                    let error_msg = format!("连接不上 {} 服务器", self.mode.get_server_name());
+                    let error_msg = format!("无法连接至 {} 服务器，请检查网络连接或联系开发人员", self.mode.get_server_name());
                     ui.label(egui::RichText::new(error_msg)
                         .color(egui::Color32::from_rgb(255, 100, 100)));
                     
